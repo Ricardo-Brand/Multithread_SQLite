@@ -63,11 +63,12 @@ static const char *skip_spaces_and_comments(const char *ptr, const char *end)
 
 static bool load_sql_file(sqlite3 *db)
 {
-    sqlite3_stmt *stmt;
+    sqlite3_stmt *stmt = NULL;
     const char *sql;
     const char *tail = sql_create_table_cards;
     const char *end = tail + sql_create_table_cards_len - 1;
     size_t len;
+    int rc;
     while (tail < end)
     {
         tail = skip_spaces_and_comments(tail, end);
@@ -79,6 +80,7 @@ static bool load_sql_file(sqlite3 *db)
         if (sqlite3_prepare_v3(db, tail, len, SQLITE_PREPARE_NORMALIZE, &stmt, &tail) != SQLITE_OK)
         {
             fprintf(stderr, "sqlite3_prepare_v3 failed\n");
+            fprintf(stderr, "tail: %s\n", tail);
             return false;
         }
 
@@ -87,6 +89,13 @@ static bool load_sql_file(sqlite3 *db)
         {
             printf("-------------\n%s\n-------------\n", sql);
             sqlite3_free((void *)sql);
+        }
+
+        rc = sqlite3_step(stmt);
+        if(rc != SQLITE_DONE) {
+            fprintf(stderr, "step failed: %s\n", sqlite3_errmsg(db));
+            sqlite3_finalize(stmt);
+            return false;
         }
 
         if (sqlite3_finalize(stmt) != SQLITE_OK)
@@ -107,6 +116,8 @@ static void *run(void *arg){
     if(sqlite3_open_v2(storage, &db, DB_FLAGS, NULL) != SQLITE_OK){
         return NULL;
     }
+
+
 
     if(sqlite3_close(db) != SQLITE_OK){
         return NULL;
@@ -130,14 +141,63 @@ static bool start_thread(const char *storage){
     return true;
 }
 
+static bool seed_db(sqlite3 *db){
+    sqlite3_stmt *stmt = NULL;
+    size_t total = 0;
+    const char *sql = "INSERT INTO conta (saldo) VALUES (?);";
+
+    if(sqlite3_exec(db, "BEGIN TRANSACTION;", NULL, NULL, NULL) != SQLITE_OK){
+        fprintf(stderr, "Falha no sqlite3_exec: 'BEGIN'\n");
+        return false;
+    }
+
+    if(sqlite3_prepare_v2(db, sql, -1, &stmt, 0) != SQLITE_OK){
+        fprintf(stderr, "Falha no sqlite3_prepare_v2\n");
+        fprintf(stderr, "ERROR: %s\n", sqlite3_errmsg(db));
+        goto rollback;
+    }
+
+    for(int i = 0; i < 1000; i++){
+
+        if(sqlite3_bind_int(stmt, 1, 1000) != SQLITE_OK){
+            fprintf(stderr, "Falha no sqlite3_bind_int\n");
+            goto rollback;
+        }
+        if(sqlite3_step(stmt) != SQLITE_DONE){
+            fprintf(stderr, "Falha no sqlite3_step\n");
+            goto rollback;
+        }
+
+        total += 1000;
+
+        sqlite3_reset(stmt);
+    }
+
+    if(stmt){
+        if(sqlite3_reset(stmt) != SQLITE_OK){
+            fprintf(stderr, "Falha no sqlite3_finalize\n");
+            goto rollback;
+        }
+    }
+
+    if(sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK){
+        fprintf(stderr, "Falha no sqlite3_exec: 'COMMIT'\n");
+        return false;
+    }
+
+    return true;
+
+rollback:
+    sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+    return false;
+}
+
 static bool start(const char *str)
 {
     sqlite3 *db;
     sqlite3_stmt *stmt;
     
-    // const char *str = PROJ_BASEDIR "/storage.sqlite";
     char *errmsg;
-    // char temp[1024];
 
     db = NULL;
     errmsg = NULL;
@@ -172,6 +232,11 @@ static bool start(const char *str)
         goto end;
     }
 
+    if(!seed_db(db)){
+        fprintf(stderr, "seed_db failed\n");
+        goto end;
+    }
+
     printf("TABLE CREATED!\n");
     stmt = NULL;
 
@@ -200,7 +265,7 @@ int main(void)
         perror("getcwd() error");
         return 1;
     }
-    if (strncat(cwd, "/storage.sqlite", sizeof(cwd) - 1) == NULL) {
+    if (strncat(cwd, "/storage.db", sizeof(cwd) - 1) == NULL) {
         perror("strncat() error");
         return 1;
     }

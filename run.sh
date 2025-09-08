@@ -43,8 +43,8 @@ export CC=/usr/bin/gcc
     -lm \
     -lz \
 
-if [[ -f 'storage.sqlite'  ]]; then
-    rm storage.sqlite
+if [[ -f 'storage.db'  ]]; then
+    rm storage.db
 fi
 
 ./build/main
