@@ -38,13 +38,22 @@ export CC=/usr/bin/gcc
     -L/opt/homebrew/lib \
     -lsqlite3 \
     -lpthread \
+    -lcrypto \
     -Wall \
     -O2 \
     -lm \
     -lz \
 
-if [[ -f 'storage.db'  ]]; then
-    rm storage.db
+# Define o caminho do DB
+DB_FILE="$(pwd)/storage.db"
+
+if [[ -f "$DB_FILE"  ]]; then
+    rm -f "$DB_FILE" "${DB_FILE}-wal" "${DB_FILE}-shm"
 fi
+
+# Ajusta permissões (dono = leitura/escrita, diretório = gravável)
+touch "$DB_FILE"
+chmod 600 "$DB_FILE"
+chmod u+rwx "$(pwd)"
 
 ./build/main

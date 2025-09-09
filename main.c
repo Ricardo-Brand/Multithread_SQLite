@@ -12,9 +12,14 @@
 #include "sqlite3.h"
 #include "sql-stmts.h"
 #include <pthread.h>
+#include <openssl/rand.h>
 
 #define THREAD_COUNT 5
 #define DB_FLAGS SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_WAL | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_NOFOLLOW
+#define DB_TRANSACTION_AMOUNT 100
+#define DB_VALUE_TRANSACTION 200
+
+static pthread_mutex_t DB_MUTEX;
 
 typedef struct StrList StrList;
 struct StrList
@@ -107,21 +112,159 @@ static bool load_sql_file(sqlite3 *db)
     return true;
 }
 
+bool transaction(sqlite3 *db){
+    sqlite3_stmt *stmt = NULL;
+    int saldo_1 = 0, saldo_2 = 0;
+    unsigned int raw;
+    int conta_1, conta_2;
+init:
+    RAND_bytes((unsigned char*)&raw, sizeof(raw));
+    conta_1 = (raw % 1000) + 1;
+
+    RAND_bytes((unsigned char*)&raw, sizeof(raw));
+    conta_2 = (raw % 1000) + 1;
+
+    if(conta_1 == conta_2)
+        goto init;
+
+    if(sqlite3_prepare_v2(db, "SELECT * FROM conta WHERE id = ? OR id = ?;", -1, &stmt, NULL) != SQLITE_OK){
+        fprintf(stderr, "Falha no 1º sqlite3_prepare_v2\n");
+        return false;
+    }
+
+    if(sqlite3_bind_int(stmt, 1, conta_1) != SQLITE_OK ||
+        sqlite3_bind_int(stmt, 2, conta_2) != SQLITE_OK){
+        fprintf(stderr, "Falha no 1º sqlite3_bind_int\n");
+        return false;
+    }
+
+    if(sqlite3_step(stmt) != SQLITE_ROW){
+        fprintf(stderr, "Falha no 1º sqlite3_step\n");
+        return false;
+    }
+
+    saldo_1 = sqlite3_column_int(stmt, 1);
+    if(saldo_1 < DB_VALUE_TRANSACTION){
+        fprintf(stderr, "Falha no 1º sqlite3_column_int\n");
+        printf("saldo 1: %d\n", saldo_1);
+        return false;
+    }
+
+    if(sqlite3_step(stmt) != SQLITE_ROW){
+        fprintf(stderr, "Falha no 2º sqlite3_step\n");
+        return false;
+    }
+
+    saldo_2 = sqlite3_column_int(stmt, 1);
+    if(saldo_2 < DB_VALUE_TRANSACTION){
+        fprintf(stderr, "Falha no 2º sqlite3_column_int\n");
+        return false;
+    }
+
+    // Irá transferir o valor de <DB_VALUE_TRANSACTION> de uma conta para outra
+    saldo_1 -= DB_VALUE_TRANSACTION;
+    saldo_2 += DB_VALUE_TRANSACTION;
+
+    if(stmt){
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+    
+    if(sqlite3_prepare_v2(db, "UPDATE conta SET saldo = ? WHERE id = ?;", -1, &stmt, NULL) != SQLITE_OK){
+        fprintf(stderr, "Falha no 2º sqlite3_prepare_v2\n");
+        return false;
+    }
+
+    if(sqlite3_bind_int(stmt, 1, saldo_1) != SQLITE_OK || 
+        sqlite3_bind_int(stmt, 2, conta_1) != SQLITE_OK){
+        fprintf(stderr, "Falha no 2º sqlite3_bind_int\n");
+        return false;
+    }
+
+    if(sqlite3_step(stmt) != SQLITE_DONE){
+        fprintf(stderr, "ERRO: %s\n", sqlite3_errmsg(db));
+        fprintf(stderr, "Falha no 3º sqlite3_step\n");
+        return false;
+    }
+
+    sqlite3_reset(stmt);
+
+    if(sqlite3_bind_int(stmt, 1, saldo_2) != SQLITE_OK ||
+        sqlite3_bind_int(stmt, 2, conta_2) != SQLITE_OK){
+        fprintf(stderr, "Falha no 3º sqlite3_bind_int\n");
+        return false;
+    }
+
+    if(sqlite3_step(stmt) != SQLITE_DONE){
+        fprintf(stderr, "Falha no 4º sqlite_step\n");
+        return false;
+    }
+
+    if(stmt){
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+    
+    return true;
+}
+
+void saldo_total(const char *storage){
+    sqlite3_stmt *stmt = NULL;
+    sqlite3 *db;
+    int saldo_conta = 0, saldo_total = 0;
+
+    if(sqlite3_open_v2(storage, &db, DB_FLAGS, NULL) != SQLITE_OK){
+        fprintf(stderr, "Falha ao abrir conexao do banco de dados\n");
+        return;
+    }
+
+    if(sqlite3_prepare_v2(db, "SELECT * FROM conta;", -1, &stmt, NULL) != SQLITE_OK){
+        fprintf(stderr, "Falha no sqlite3_prepare_v2\n");
+        return;
+    }
+
+    while(sqlite3_step(stmt) == SQLITE_ROW){
+        saldo_conta = sqlite3_column_int(stmt, 1);
+
+        saldo_total += saldo_conta;
+    }
+
+    if(stmt){
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+
+    if(sqlite3_close(db) != SQLITE_OK){
+        fprintf(stderr, "Falha ao fechar conexao do banco de dados\n");
+        return;
+    }
+
+    printf("saldo total: %d\n", saldo_total);
+
+    return;
+}
+
 static void *run(void *arg){
     const char *storage = (const char *)arg;
     pthread_t thread = pthread_self();
     sqlite3 *db;
-    printf("thread: %p\nstorage: %s\n", thread, storage);
+    
+    printf("Thread executando: %lu\n", thread);
 
+    pthread_mutex_lock(&DB_MUTEX);
     if(sqlite3_open_v2(storage, &db, DB_FLAGS, NULL) != SQLITE_OK){
         return NULL;
     }
 
-
+    for(int i = 0; i < DB_TRANSACTION_AMOUNT; i++){
+        if(!transaction(db))
+            printf("Transação deu erro\n");
+    }
 
     if(sqlite3_close(db) != SQLITE_OK){
         return NULL;
     }
+    pthread_mutex_unlock(&DB_MUTEX);
 
     return NULL;
 }
@@ -137,6 +280,8 @@ static bool start_thread(const char *storage){
         pthread_join(threads[i], NULL);
     }
     printf("Threads finalizadas\n");
+
+    saldo_total(storage);
 
     return true;
 }
@@ -185,6 +330,7 @@ static bool seed_db(sqlite3 *db){
         return false;
     }
 
+    printf("Total: %zu\n", total);
     return true;
 
 rollback:
@@ -275,8 +421,11 @@ int main(void)
         printf("%s\n", opt);
     }
 
+    pthread_mutex_init(&DB_MUTEX, NULL);
+
     printf("Starting...!\n");
     status = start((const char *)cwd);
     printf("DONE!!\n");
+    pthread_mutex_destroy(&DB_MUTEX);
     return status;
 }
