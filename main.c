@@ -16,7 +16,8 @@
 
 #define THREAD_COUNT 5
 #define DB_FLAGS SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_WAL | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_NOFOLLOW
-#define DB_TRANSACTION_AMOUNT 100
+#define DB_ACCOUNTS 1000
+#define DB_TRANSACTION_AMOUNT 1000
 #define DB_VALUE_TRANSACTION 200
 
 static pthread_mutex_t DB_MUTEX;
@@ -114,17 +115,20 @@ static bool load_sql_file(sqlite3 *db)
 
 bool transaction(sqlite3 *db){
     sqlite3_stmt *stmt = NULL;
-    int saldo_1 = 0, saldo_2 = 0;
+    int saldo[2], conta[2];
     unsigned int raw;
-    int conta_1, conta_2;
+
+    saldo[0] = 0;
+    saldo[1] = 0;
+
 init:
     RAND_bytes((unsigned char*)&raw, sizeof(raw));
-    conta_1 = (raw % 1000) + 1;
+    conta[0] = (raw % DB_ACCOUNTS) + 1;
 
     RAND_bytes((unsigned char*)&raw, sizeof(raw));
-    conta_2 = (raw % 1000) + 1;
+    conta[1] = (raw % DB_ACCOUNTS) + 1;
 
-    if(conta_1 == conta_2)
+    if(conta[0] == conta[1])
         goto init;
 
     if(sqlite3_prepare_v2(db, "SELECT * FROM conta WHERE id = ? OR id = ?;", -1, &stmt, NULL) != SQLITE_OK){
@@ -132,8 +136,8 @@ init:
         return false;
     }
 
-    if(sqlite3_bind_int(stmt, 1, conta_1) != SQLITE_OK ||
-        sqlite3_bind_int(stmt, 2, conta_2) != SQLITE_OK){
+    if(sqlite3_bind_int(stmt, 1, conta[0]) != SQLITE_OK ||
+        sqlite3_bind_int(stmt, 2, conta[1]) != SQLITE_OK){
         fprintf(stderr, "Falha no 1º sqlite3_bind_int\n");
         return false;
     }
@@ -143,11 +147,10 @@ init:
         return false;
     }
 
-    saldo_1 = sqlite3_column_int(stmt, 1);
-    if(saldo_1 < DB_VALUE_TRANSACTION){
-        fprintf(stderr, "Falha no 1º sqlite3_column_int\n");
-        printf("saldo 1: %d\n", saldo_1);
-        return false;
+    saldo[0] = sqlite3_column_int(stmt, 1);
+    if(saldo[0] < DB_VALUE_TRANSACTION){
+        fprintf(stderr, "Saldo insuficiente\n");
+        goto end;
     }
 
     if(sqlite3_step(stmt) != SQLITE_ROW){
@@ -155,15 +158,15 @@ init:
         return false;
     }
 
-    saldo_2 = sqlite3_column_int(stmt, 1);
-    if(saldo_2 < DB_VALUE_TRANSACTION){
-        fprintf(stderr, "Falha no 2º sqlite3_column_int\n");
-        return false;
+    saldo[1] = sqlite3_column_int(stmt, 1);
+    if(saldo[1] < DB_VALUE_TRANSACTION){
+        fprintf(stderr, "Saldo insuficiente\n");
+        goto end;
     }
 
     // Irá transferir o valor de <DB_VALUE_TRANSACTION> de uma conta para outra
-    saldo_1 -= DB_VALUE_TRANSACTION;
-    saldo_2 += DB_VALUE_TRANSACTION;
+    saldo[0] -= DB_VALUE_TRANSACTION;
+    saldo[1] += DB_VALUE_TRANSACTION;
 
     if(stmt){
         sqlite3_finalize(stmt);
@@ -175,8 +178,8 @@ init:
         return false;
     }
 
-    if(sqlite3_bind_int(stmt, 1, saldo_1) != SQLITE_OK || 
-        sqlite3_bind_int(stmt, 2, conta_1) != SQLITE_OK){
+    if(sqlite3_bind_int(stmt, 1, saldo[0]) != SQLITE_OK || 
+        sqlite3_bind_int(stmt, 2, conta[0]) != SQLITE_OK){
         fprintf(stderr, "Falha no 2º sqlite3_bind_int\n");
         return false;
     }
@@ -189,8 +192,8 @@ init:
 
     sqlite3_reset(stmt);
 
-    if(sqlite3_bind_int(stmt, 1, saldo_2) != SQLITE_OK ||
-        sqlite3_bind_int(stmt, 2, conta_2) != SQLITE_OK){
+    if(sqlite3_bind_int(stmt, 1, saldo[1]) != SQLITE_OK ||
+        sqlite3_bind_int(stmt, 2, conta[1]) != SQLITE_OK){
         fprintf(stderr, "Falha no 3º sqlite3_bind_int\n");
         return false;
     }
@@ -200,11 +203,12 @@ init:
         return false;
     }
 
+end:
     if(stmt){
         sqlite3_finalize(stmt);
         stmt = NULL;
     }
-    
+
     return true;
 }
 
@@ -302,7 +306,7 @@ static bool seed_db(sqlite3 *db){
         goto rollback;
     }
 
-    for(int i = 0; i < 1000; i++){
+    for(int i = 0; i < DB_ACCOUNTS; i++){
 
         if(sqlite3_bind_int(stmt, 1, 1000) != SQLITE_OK){
             fprintf(stderr, "Falha no sqlite3_bind_int\n");
