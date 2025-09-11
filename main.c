@@ -187,24 +187,18 @@ end:
   return status;
 }
 
-int transaction(int thread_id, const char *storage, uint32_t origem,
+int transaction(int thread_id, sqlite3 *db, uint32_t origem,
                 uint32_t destino, uint64_t valor) {
   sqlite3_stmt *select_stmt = NULL, *update_stmt = NULL;
   int status;
   uint64_t saldo[2];
-  sqlite3 *db = NULL;
+  // sqlite3 *db = NULL;
 #if defined(WITH_TRANSACTION) && WITH_TRANSACTION != 0
   int tx = 0;
 #endif
 
   saldo[0] = 0;
   saldo[1] = 0;
-
-  status = sqlite3_open_v2(storage, &db, DB_FLAGS, NULL);
-  if (status != SQLITE_OK) {
-    return status;
-  }
-
   // Prepare SELECT
   status =
       sqlite3_prepare_v3(db, "SELECT * FROM conta WHERE id = ? LIMIT 1;", -1,
@@ -307,10 +301,6 @@ end:
     update_stmt = NULL;
   }
 
-  if (db) {
-    sqlite3_close(db);
-    db = NULL;
-  }
   return status;
 }
 
@@ -393,6 +383,7 @@ static void *run(void *arg) {
   unsigned int thread_id, origem, destino;
   int i, status, retries;
   useconds_t delay;
+  sqlite3 *db = NULL;
 
   /* Contador para o número de tentativas */
   retries = 0;
@@ -407,7 +398,14 @@ static void *run(void *arg) {
 
   printf("Thread %2d executando...\n", thread_id);
 
+  if(sqlite3_open_v2(storage, &db, DB_FLAGS, NULL) != SQLITE_OK){
+    fprintf(stderr, "Falha na conexão do banco de dados\n");
+    return NULL;
+  }
+      
+
   for (i = 0; i < TRANSACTIONS_PER_THREAD; i++) {
+
     status = SQLITE_OK;
 
     /* Sorteia uma conta `origem` e `destino` aleatóriamente */
@@ -423,7 +421,7 @@ static void *run(void *arg) {
     do {
       /* Transfere um saldo de `origem` para `destino` */
       status =
-          transaction(thread_id, storage, origem, destino, TRANSFER_AMOUNT);
+          transaction(thread_id, db, origem, destino, TRANSFER_AMOUNT);
 
       /* Se o status é `SQLITE_BUSY` tente denovo */
       if (status == SQLITE_BUSY) {
@@ -438,7 +436,7 @@ static void *run(void *arg) {
       }
     } while (status ==
              SQLITE_BUSY);  // tente novamente apenas se for SQLITE_BUSY.
-
+    
     // Pare tudo em caso de falha.
     if (status != SQLITE_OK) break;
 
@@ -446,8 +444,14 @@ static void *run(void *arg) {
     usleep(5 * MILLISECONDS);
   }
 
+  if(sqlite3_close(db) != SQLITE_OK)
+    fprintf(stderr, "Falha ao fechar conexão com o banco de dados\n");
+
+  db = NULL;
+
   printf("Thread %2d executou %4d transações com %3d tentativas.\n", thread_id,
          i, retries);
+
   return NULL;
 }
 
