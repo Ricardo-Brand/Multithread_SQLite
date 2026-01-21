@@ -45,7 +45,7 @@ O foco principal é entender como gerenciar concorrência, sincronização de th
 **1 - Clone o repositório:**
 
 ```http
-git clone https://github.com/Ricardo-Brand/Multithread_SQLite.git
+git clone git@github.com:Ricardo-Brand/Multithread_SQLite.git
 ```
 
 **2 - Entre na pasta:**
